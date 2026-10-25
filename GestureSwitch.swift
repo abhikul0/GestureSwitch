@@ -37,7 +37,21 @@ class WindowManager {
             var axWindowsVal: AnyObject?
             let axErr = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &axWindowsVal)
             if axErr == .success, let axWindows = axWindowsVal as? [AXUIElement] {
-                if let matchedElement = axWindows.first {
+                var matchedElement: AXUIElement? = nil
+                for axWin in axWindows {
+                    var titleVal: AnyObject?
+                    if AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleVal) == .success,
+                       let axTitle = titleVal as? String, axTitle == windowName {
+                        matchedElement = axWin
+                        break
+                    }
+                }
+                
+                if matchedElement == nil {
+                    matchedElement = axWindows.first
+                }
+                
+                if let matchedElement = matchedElement {
                     let frame = CGRect(x: x, y: y, width: w, height: h)
                     results.append(WindowInfo(
                         pid: pid,
@@ -53,6 +67,29 @@ class WindowManager {
         return results
     }
     
+    static func isMouseOnAnyWindowTitleBar() -> Bool {
+        let mouseLoc = NSEvent.mouseLocation
+        guard let mainScreen = NSScreen.screens.first else { return false }
+        let screenHeight = mainScreen.frame.height
+        // Convert AppKit bottom-left coordinate to CoreGraphics top-left coordinate space
+        let cgPoint = CGPoint(x: mouseLoc.x, y: screenHeight - mouseLoc.y)
+        
+        let windows = getVisibleWindows()
+        for window in windows {
+            // Define the title bar region as the top 30 points of the window bounds
+            let titleBarRect = CGRect(
+                x: window.bounds.minX,
+                y: window.bounds.minY,
+                width: window.bounds.width,
+                height: 30.0
+            )
+            if titleBarRect.contains(cgPoint) {
+                return true
+            }
+        }
+        return false
+    }
+    
     static func focusWindow(_ window: WindowInfo) {
         let app = NSRunningApplication(processIdentifier: window.pid)
         app?.activate()
@@ -64,6 +101,7 @@ class WindowManager {
 class WindowSwitcherHUD {
     private var panel: NSPanel?
     private var stackView: NSStackView?
+    private var scrollView: NSScrollView?
     private var rowViews: [NSView] = []
     private var titleLabels: [NSTextField] = []
     private var headerLabel: NSTextField?
@@ -94,18 +132,27 @@ class WindowSwitcherHUD {
             visualEffect.layer?.cornerRadius = 16
             visualEffect.layer?.masksToBounds = true
             
+            let scrollView = NSScrollView()
+            scrollView.translatesAutoresizingMaskIntoConstraints = false
+            scrollView.hasVerticalScroller = true
+            scrollView.borderType = .noBorder
+            scrollView.drawsBackground = false
+            
             let stack = NSStackView()
             stack.orientation = .vertical
             stack.alignment = .leading
             stack.spacing = 8
             stack.translatesAutoresizingMaskIntoConstraints = false
             
-            visualEffect.addSubview(stack)
+            scrollView.documentView = stack
+            visualEffect.addSubview(scrollView)
+            
             NSLayoutConstraint.activate([
-                stack.topAnchor.constraint(equalTo: visualEffect.topAnchor, constant: 20),
-                stack.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor, constant: -20),
-                stack.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor, constant: 20),
-                stack.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor, constant: -20)
+                scrollView.topAnchor.constraint(equalTo: visualEffect.topAnchor, constant: 16),
+                scrollView.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor, constant: -16),
+                scrollView.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor, constant: 16),
+                scrollView.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor, constant: -16),
+                stack.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
             ])
             
             panel.contentView?.addSubview(visualEffect)
@@ -113,12 +160,13 @@ class WindowSwitcherHUD {
             
             self.panel = panel
             self.stackView = stack
+            self.scrollView = scrollView
         }
     }
     
     func prepare(windows: [WindowInfo]) {
         DispatchQueue.main.async {
-            guard let stackView = self.stackView else { return }
+            guard let stackView = self.stackView, let panel = self.panel else { return }
             stackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
             self.rowViews.removeAll()
             self.titleLabels.removeAll()
@@ -155,6 +203,11 @@ class WindowSwitcherHUD {
                 self.rowViews.append(rowView)
                 self.titleLabels.append(titleLabel)
             }
+            
+            let rowHeight: CGFloat = 38
+            let calculatedHeight = min(CGFloat(windows.count) * rowHeight + 60, 500)
+            panel.setContentSize(NSSize(width: 440, height: calculatedHeight))
+            panel.center()
             
             self.panel?.orderFrontRegardless()
         }
@@ -304,11 +357,14 @@ class SwishGestureEngine {
         }
 
         if !isSwitcherVisible {
+            // 🛡️ Require mouse to be over a window's title bar to activate
+            guard WindowManager.isMouseOnAnyWindowTitleBar() else { return }
+            
             windows = WindowManager.getVisibleWindows()
             guard windows.count > 1 else { return }
             guard abs(deltaX) > 2.0 else { return }
             
-            log("✨ Swipe started! Opening HUD switcher with \(windows.count) windows.")
+            log("✨ Swipe started on title bar! Opening HUD switcher with \(windows.count) windows.")
             isSwitcherVisible = true
             currentIndex = 0
             accumulatedDeltaX = 0.0
@@ -426,12 +482,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             
             logWindowController.appendLog("⚠️ Accessibility permission required. Please enable GestureSwitch in System Settings.")
             
-            // Open System Settings once
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
                 NSWorkspace.shared.open(url)
             }
             
-            // Poll quietly in the background without blocking or popping alerts
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
                 if AXIsProcessTrusted() {
                     timer.invalidate()
