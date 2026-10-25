@@ -27,8 +27,8 @@
 
 1. Clone or place all project files (`GestureSwitch.swift`, `Info.plist`, and `build.sh`) into a local directory.
 2. Open your Terminal and navigate to that directory:
-   ```bash
-   cd /path/to/GestureSwitch
+```bash
+cd /path/to/GestureSwitch
 
 ```
 
